@@ -1,0 +1,233 @@
+//lock.c
+
+#include "lock.h"
+//旨在:简单锁的使用
+#include <stdio.h>
+
+// typedef struct {
+//   int amount;
+//   pthread_mutex_t mutex;//定义该线程的锁
+// }lock_t;
+
+void amountInit(lock_t* Account) {//初始化 lock_t 结构
+  Account->amount=0;
+  pthread_mutex_init(&Account->mutex,NULL);
+  
+}
+
+void Income(lock_t* Account, int amount) { //用于进行资金收入操作，金额为 amount
+  pthread_mutex_lock(&Account->mutex);//加锁
+  Account->amount+=amount;
+  pthread_mutex_unlock(&Account->mutex);//解锁
+}
+
+void Expend(lock_t* Account, int amount) {//用于进行资金支出操作，金额为 amount
+  pthread_mutex_lock(&Account->mutex);
+  Account->amount-=amount;
+  pthread_mutex_unlock(&Account->mutex);
+}
+
+//list_lock.c
+
+#include "list_lock.h"
+//旨在理解:
+// 互斥锁的使用
+// 条件变量的使用
+// 生产者与消费者模型
+#include <stdio.h>
+#include <stdlib.h>
+// typedef int DataType;
+// typedef struct node {
+//   DataType value;
+//   struct node* next;
+// } LNode, *LinkList;
+
+// typedef struct {
+//   LinkList head;
+//   pthread_mutex_t mutex;
+//   pthread_cond_t cond;
+// } list_lock_t;
+
+void listInit(list_lock_t* list) {//初始化 list_lock_t 结构
+  list->head=NULL;
+  pthread_mutex_init(&list->mutex,NULL);
+  pthread_cond_init(&list->cond,NULL);
+}
+
+//将生成的数据 value 放入 list 链表中，你可能需要为此分配一个堆区资源(头部)
+void producer(list_lock_t* list, DataType value) {
+  LNode* newlode=(LNode*)malloc(sizeof(LNode));
+  pthread_mutex_lock(&list->mutex);
+  newlode->value=value;
+  newlode->next=list->head;//把新生成的数据所在的节点插在链表头部
+  list->head=newlode;//新的头部发生变化
+  pthread_cond_signal(&list->cond);
+  pthread_mutex_unlock(&list->mutex);
+}
+
+//从 list 链表中消耗一个数据，并释放其占有的资源(头部)
+void consumer(list_lock_t* list) {
+  pthread_mutex_lock(&list->mutex);
+  while(list->head==NULL){//生产者(producer)无数据放入链表list时,消费者等待
+    pthread_cond_wait(&list->cond,&list->mutex);
+   }
+  //有数据时
+  LNode* a=list->head;//取头部数据
+  list->head=list->head->next;//head右移
+  free(a);//释放
+  pthread_mutex_unlock(&list->mutex);
+}
+
+//获取当前 list 中的资源个数，并返回该个数
+int getListSize(list_lock_t* list) {
+  int cnt=0;
+  pthread_mutex_lock(&list->mutex);
+  LNode* curr=list->head;
+  while(curr!=NULL){
+    curr=curr->next;
+    cnt++;
+  }
+  pthread_mutex_unlock(&list->mutex);
+  return cnt;
+}
+
+//hash_lock.c
+#include "hash_lock.h"
+//旨在理解:
+// 多把互斥锁的使用
+// 哈希桶与哈希函数
+#include <stdio.h>
+#include <stdlib.h>
+// #define HASHNUM 13
+// #define HASH(key) key % HASHNUM
+
+// typedef struct HashNode {
+//   int value;
+//   int key;
+//   struct HashNode* next;
+// }Hnode,*Hlist;
+
+// struct HashTable {
+//   pthread_mutex_t mutex;
+//   Hlist head;
+// };
+
+// typedef struct{
+//   struct HashTable table[HASHNUM];
+// }hash_lock_t;
+
+
+
+
+//对于每个index,就是哈希映射的下标(key->index)
+//可能有多个key,故用链表来存
+//每个key储存一个value
+
+
+void hashInit(hash_lock_t* bucket) {//初始化 hash_lock_t 结构
+  for(int i=0;i<HASHNUM;i++){
+    bucket->table[i].head=NULL;
+    pthread_mutex_init(&bucket->table[i].mutex,NULL);
+  }
+}
+//通过 key 值来获取对应的 value
+int getValue(hash_lock_t* bucket, int key) {
+  int index=HASH(key);
+  int result=-1;
+  pthread_mutex_lock(&bucket->table[index].mutex);
+  Hnode* curr=bucket->table[index].head;
+  while(curr!=NULL){
+    if(curr->key==key){
+      result=curr->value;
+      pthread_mutex_unlock(&bucket->table[index].mutex);
+      return result;
+    }
+    curr=curr->next;
+  }
+  pthread_mutex_unlock(&bucket->table[index].mutex);
+  return result;
+}
+//向哈希桶中添加一个节点，通过key来索引对应的哈希序列,如果键已经存在，则覆盖现有值
+void insert(hash_lock_t* bucket, int key, int value) {
+  int index=HASH(key);
+  pthread_mutex_lock(&bucket->table[index].mutex);
+  Hnode* curr=bucket->table[index].head;
+  while(curr!=NULL){
+    if(curr->key==key){
+      curr->value=value;
+      pthread_mutex_unlock(&bucket->table[index].mutex);
+      return ;
+    }
+    curr=curr->next;
+  }
+  Hnode* newnode=(Hnode*)malloc(sizeof(Hnode));
+  newnode->key=key;
+  newnode->value=value;
+  newnode->next=bucket->table[index].head;
+  bucket->table[index].head=newnode;
+  pthread_mutex_unlock(&bucket->table[index].mutex);
+}
+//重新设置一个节点的key,并将其移动到对应的序列，如果键不存在，则返回-1,成功返回0
+int setKey(hash_lock_t* bucket, int key, int new_key) {
+  if(key==new_key) return 0;
+  int index_old=HASH(key);
+  int index_new=HASH(new_key);
+  if(index_old==index_new){//一个index
+    pthread_mutex_lock(&bucket->table[index_old].mutex);
+    Hnode* curr=bucket->table[index_old].head;
+    while(curr!=NULL){
+
+      if(curr->key==key){//旧的value换成新的
+        curr->key=new_key;
+        pthread_mutex_unlock(&bucket->table[index_old].mutex);
+        return 0;
+      }
+      curr=curr->next;
+    }
+    pthread_mutex_unlock(&bucket->table[index_old].mutex);
+    return -1;//old_key不存在,-1
+  }
+  //不同index:新加一个new_key,将旧的value移过去;对于old_key,清空?
+//ai指导:1 处理跨桶移动的核心难点在于死锁预防和内存管理
+//你需要同时操作两个不同的链表（旧的桶和新的桶），因此必须小心地获取锁
+//2 节点操作：
+// 节点操作：
+  //实现:
+  //注意:因为处理时两个index都要处理,所以涉及两个线程的数据操作
+  //注意先锁,后锁问题
+  //虽然逻辑上我们是“先处理 old，再处理 new”，
+  //但在资源竞争（加锁）层面，必须遵守全局统一的顺序（比如从小到大），否则交叉操作时一定会发生死锁
+  int first=(index_old<index_new)?index_old:index_new;
+  int second=(index_old<index_new)?index_new:index_old;
+  pthread_mutex_lock(&bucket->table[first].mutex);
+  pthread_mutex_lock(&bucket->table[second].mutex);//按顺序加锁,防止死锁
+  Hnode* curr=bucket->table[index_old].head;
+  Hnode* prev=NULL;
+  while(curr!=NULL){
+    if(curr->key==key){//在旧链表找到目标
+      // Hnode* newnode=(Hnode*)malloc(sizeof(Hnode));
+      if(prev==NULL){
+        bucket->table[index_old].head=curr->next;//如果是头节点,桶的头指针指向下一个
+      }else{
+        prev->next=curr->next;//如果是中间节点,前一个直接指向后一个,跳过curr
+      }
+      Hnode* newnode=(Hnode*)malloc(sizeof(Hnode));
+      newnode->key=new_key;
+      newnode->value=curr->value;
+      newnode->next=bucket->table[index_new].head;
+      bucket->table[index_new].head=newnode;
+      // curr->key=new_key;
+      // curr->next=bucket->table[index_new].head;
+      // bucket->table[index_new].head=curr;//更改头节点
+      free(curr);
+      pthread_mutex_unlock(&bucket->table[first].mutex);
+      pthread_mutex_unlock(&bucket->table[second].mutex);
+      return 0;
+    }
+    prev=curr;
+    curr=curr->next;
+  }
+  pthread_mutex_unlock(&bucket->table[first].mutex);
+  pthread_mutex_unlock(&bucket->table[second].mutex);
+  return -1;
+}
